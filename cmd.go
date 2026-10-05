@@ -107,6 +107,46 @@ func pie(pct float64) string {
 	}
 }
 
+func statusBar(tmux bool, pct float64, width int) string {
+	filled := int(pct/100*float64(width) + 0.5)
+	if filled > width {
+		filled = width
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	var b strings.Builder
+	prevColor := ""
+	for i := 0; i < width; i++ {
+		var color string
+		var ch rune
+		if i < filled {
+			pos := float64(i) / float64(width) * 100
+			switch {
+			case pos >= 80:
+				color = "colour196"
+			case pos >= 50:
+				color = "colour214"
+			default:
+				color = "colour76"
+			}
+			ch = '█'
+		} else {
+			color = "colour238"
+			ch = '░'
+		}
+		if tmux && color != prevColor {
+			fmt.Fprintf(&b, "#[fg=%s]", color)
+			prevColor = color
+		}
+		b.WriteRune(ch)
+	}
+	if tmux {
+		b.WriteString("#[fg=default]")
+	}
+	return b.String()
+}
+
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	pane := fs.String("pane", "", "tmux pane id (#{pane_id})")
@@ -129,41 +169,53 @@ func cmdStatus(args []string) error {
 
 	var parts []string
 	if si != nil {
-		ctx := fmt.Sprintf("%s %.0f%% %s/%s", pie(si.Pct), si.Pct, human(si.Context), human(int64(si.Window)))
-		seg := p.c(levelColor(si.Pct), ctx) + " " + p.c("colour250", money(si.Cost.Cost))
+		model := "◆ " + modelShort(si.Model) + " (" + human(int64(si.Window)) + ")"
 		switch si.State {
 		case "busy":
-			seg += " " + p.c("colour117", "⟳")
+			model += " " + p.c("colour117", "⟳")
 		case "wait":
-			seg += " " + p.c("colour203", "⚠ chờ duyệt")
+			model += " " + p.c("colour203", "⚠")
 		}
-		parts = append(parts, seg)
+		parts = append(parts, model)
+		parts = append(parts, statusBar(p.tmux, si.Pct, 10)+"  "+p.c(levelColor(si.Pct), fmt.Sprintf("%.0f%%", si.Pct))+" of "+human(int64(si.Window)))
 		for _, st := range stats {
 			if st.Name == si.Account {
-				parts = append(parts, accountSeg(p, st, s.now))
+				if b := st.Block; b != nil {
+					pct5h := 0.0
+					if b.Pct != nil {
+						pct5h = *b.Pct
+					}
+					parts = append(parts, p.c("colour250", "5hr")+" ("+dur(b.End.Sub(s.now))+")")
+					parts = append(parts, statusBar(p.tmux, pct5h, 10)+"  "+p.c(levelColor(pct5h), fmt.Sprintf("%.0f%%", pct5h)))
+				}
+				if st.WeekPct != nil {
+					resetStr := "–"
+					if st.WeekReset > 0 {
+						resetStr = durDays(time.Duration(st.WeekReset) * time.Second)
+					}
+					parts = append(parts, p.c("colour250", "wk")+" ("+resetStr+")")
+					parts = append(parts, statusBar(p.tmux, *st.WeekPct, 10)+"  "+p.c(levelColor(*st.WeekPct), fmt.Sprintf("%.0f%%", *st.WeekPct)))
+				}
 			}
 		}
+		parts = append(parts, p.c("colour250", money(si.Cost.Cost)))
 	} else {
-		var segs []string
 		for _, st := range stats {
-			segs = append(segs, accountSeg(p, st, s.now))
+			seg := p.c("colour146", st.Name)
+			if b := st.Block; b != nil {
+				pct5h := 0.0
+				if b.Pct != nil {
+					pct5h = *b.Pct
+				}
+				seg += "  " + statusBar(p.tmux, pct5h, 8) + "  " + p.c(levelColor(pct5h), limitText(st, s.now))
+			} else {
+				seg += p.c("colour244", " 5h –")
+			}
+			parts = append(parts, seg)
 		}
-		parts = append(parts, strings.Join(segs, " · "))
 	}
-	fmt.Println(strings.Join(parts, p.c("colour240", " │ ")))
+	fmt.Println(strings.Join(parts, "  "))
 	return nil
-}
-
-func accountSeg(p painter, st AccountStats, now time.Time) string {
-	name := p.c("colour146", st.Name)
-	if st.Block == nil {
-		return name + p.c("colour244", " 5h –")
-	}
-	color := "colour250"
-	if st.Block.Pct != nil {
-		color = levelColor(*st.Block.Pct)
-	}
-	return name + " " + p.c(color, limitText(st, now))
 }
 
 // ---------- accounts ----------
